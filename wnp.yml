@@ -1,0 +1,121 @@
+Demo playbook to install IIS, .NET Core dependencies, create a sample web app, and finally host that app via IIS
+ #
+
+- name: Full Ansible demo for Rev
+  hosts: windows
+  gather_facts: no
+  vars:
+    temp_dir: C:\Users\Administrator\Downloads
+    netcoresdk_exe: "{{ temp_dir }}\\netcoresdk22.exe"
+    netcoresdk_log: "{{ temp_dir }}\\netcoresdk22_log.txt"
+    netcoresdk_url: https://download.visualstudio.microsoft.com/download/pr/40c1dd82-671c-4974-919d-ac8a61ef5a91/49ab67c335878f4a5bdd84e14c76708f/dotnet-sdk-2.2.402-win-x64.exe
+    netcorehost_exe: "{{ temp_dir }}\\netcorehost22.exe"
+    netcorehost_log: "{{ temp_dir }}\\netcorehost22_log.txt"
+    netcorehost_url: https://download.visualstudio.microsoft.com/download/pr/51c29196-43b3-47d6-a393-d0df24081ac1/8b8d720b3cd63d88a2fd69115ab713c5/dotnet-hosting-2.2.7-win.exe
+    website_parent_dir: C:\sites\example
+    website_publish_dir: "{{ website_parent_dir }}\\app"
+    website_temp_dir: "{{ website_parent_dir }}\\tmp"
+  tasks:
+
+    # IIS installation and configuration
+
+    - name: Install IIS Web-Server with sub features and management tools
+      win_feature:
+        name: Web-Server
+        state: present
+        include_sub_features: True
+        include_management_tools: True
+      register: win_feature
+
+    - name: Remove Default IIS website and site binding
+      win_iis_website:
+        name: "Default Web Site"
+        state: absent
+
+    # .NET Core SDK installation
+
+    - name: Download Microsoft .NET Core 2.2 SDK installer
+      win_get_url:
+        url: "{{ netcoresdk_url }}"
+        dest: "{{ netcoresdk_exe }}"
+
+    - name: Run Microsoft .NET Core 2.2 SDK installer
+      raw: "{{ netcoresdk_exe }} /quiet /log {{ netcoresdk_log }}"
+
+    - name: Clean up downloaded files
+      win_file:
+        path: "{{ netcoresdk_exe }}"
+        state: absent
+
+    # .NET Core Hosting Bundle installation
+
+    - name: Download Microsoft .NET Core 2.2 hosting bundle installer
+      win_get_url:
+        url: "{{ netcorehost_url }}"
+        dest: "{{ netcorehost_exe }}"
+
+    - name: Stop IIS
+      win_shell: iisreset /STOP
+
+    - name: Run Microsoft .NET Core 2.2 hosting bundle installer
+      raw: "{{ netcorehost_exe }} /passive /AcceptEULA /log {{ netcorehost_log }}"
+
+    - name: Start IIS
+      win_shell: iisreset /START
+
+    - name: Clean up downloaded files
+      win_file:
+        path: "{{ netcorehost_exe }}"
+        state: absent
+
+    # Create example .NET Core web app and related IIS app pool
+
+    - name: Create web app directory
+      win_file:
+        path: "{{ website_temp_dir }}"
+        state: directory
+
+    - name: Create sample web app
+      win_shell: dotnet new webapp; dotnet publish --output {{ website_publish_dir }}
+      args:
+        chdir: "{{ website_temp_dir }}"
+        creates: Program.cs
+
+    - name: Create sample web app Application Pool
+      win_iis_webapppool:
+        name: SampleAppPool
+        state: started
+        attributes:
+          enable32BitAppOnWin64: False
+          managedRuntimeVersion: null
+
+    - name: Add IIS_IUSRS to sample app directory
+      win_acl:
+        path: "{{ website_publish_dir }}"
+        user: IIS_IUSRS
+        rights: FullControl
+        type: allow
+        state: present
+        inherit: ContainerInherit, ObjectInherit
+        propagation: 'None'
+
+    - name: Add IIS APPPOOL\SampleAppPool to sample app directory
+      win_acl:
+        path: "{{ website_parent_dir }}"
+        user: IIS APPPOOL\SampleAppPool
+        rights: FullControl
+        type: allow
+        state: present
+        inherit: ContainerInherit, ObjectInherit
+        propagation: 'None'
+
+    - name: Create sample IIS web app
+      win_iis_website:
+        name: Sample App
+        state: started
+        port: 80
+        ip: 127.0.0.1
+        application_pool: SampleAppPool
+        physical_path: "{{ website_publish_dir }}"
+        parameters: logfile.directory:{{ website_parent_dir }}\logs
+      register: website
